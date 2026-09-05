@@ -88,51 +88,7 @@ void dwinSendText(uint16_t vp, const char* text, uint16_t fieldLen) {
   dwinWriteVP(vp, data, dataLen);
 }
 
-// Schreibt einen UTF-8-String in ein DGUS "Text Display"-Control mit
-// Encoding Mode 0x05=UNICODE. Dekodiert UTF-8 nach UCS-2 (reicht fuer
-// Tuerkisch/Latin Extended-A, keine Surrogate-Paare noetig) und sendet jedes
-// Zeichen als 2 Byte little-endian (Low-Byte zuerst, UTF-16LE). Das ist die
-// Byte-Reihenfolge, die auf diesem Display bereits getestet/bestaetigt wurde
-// (siehe dwinReadVP-Diagnose) - der VP-Adressplan spricht an anderer Stelle
-// von "UTF-16BE", das ist nur eine ungenaue Doku-Angabe, kein Widerspruch,
-// der hier aufgeloest werden muesste. Falls ein neues Feld auf dem Display
-// spiegelverkehrt/falsch erscheint: dwinReadVP() gegen die VP-Adresse nutzen
-// und Byte-Reihenfolge im Rueckgabe-Dump pruefen.
-void dwinSendTextUnicode(uint16_t vp, const char* utf8Text, uint16_t charCount) {
-  static uint8_t data[256];
-  if ((size_t)charCount * 2 > sizeof(data)) charCount = sizeof(data) / 2;
-
-  const uint8_t* s = (const uint8_t*)utf8Text;
-  size_t o = 0;
-  uint16_t chars = 0;
-
-  while (*s && chars < charCount) {
-    uint32_t cp;
-    uint8_t b0 = *s;
-    if (b0 < 0x80) {
-      cp = b0; s += 1;
-    } else if ((b0 & 0xE0) == 0xC0 && s[1]) {
-      cp = ((b0 & 0x1F) << 6) | (s[1] & 0x3F); s += 2;
-    } else if ((b0 & 0xF0) == 0xE0 && s[1] && s[2]) {
-      cp = ((b0 & 0x0F) << 12) | ((s[1] & 0x3F) << 6) | (s[2] & 0x3F); s += 3;
-    } else {
-      cp = '?'; s += 1;
-    }
-    data[o++] = cp & 0xFF;         // Low-Byte zuerst (UTF-16LE-Konvention)
-    data[o++] = (cp >> 8) & 0xFF;
-    chars++;
-  }
-  while (chars < charCount) {
-    data[o++] = 0x20; // Leerzeichen
-    data[o++] = 0x00;
-    chars++;
-  }
-
-  dwinWriteVP(vp, data, o);
-}
-
-// Liest VP zurueck und dumpt die rohen Bytes zur Diagnose (z.B. Byte-Reihenfolge
-// bei Unicode-Feldern pruefen).
+// Liest VP zurueck und dumpt die rohen Bytes zur Diagnose.
 void dwinReadVP(uint16_t vp, uint8_t wordCount) {
   uint8_t payload[6];
   size_t p = 0;
@@ -180,6 +136,20 @@ void dwinReadVP(uint16_t vp, uint8_t wordCount) {
   Serial.println();
 }
 
+// Wechselt die aktive DGUS-Bildschirmseite. Getestet per dwinReadVP(0x0084):
+// die Register-Variante (Kommando 0x80, Reg 0x03) bekam auf diesem Display
+// gar keine Antwort, aber das Schreiben von "5A 01 <Seite>" auf System-VP
+// 0x0084 (normales VP-Schreiben, Kommando 0x82) wurde vom Display
+// quittiert und uebernommen - das ist die auf dieser Firmware unterstuetzte
+// Variante. Seite 0 = Boot/Hauptseite, Seite 1-7 = die Seiten aus dem
+// VP-Adressplan.
+constexpr uint16_t VP_PAGE_SWITCH = 0x0084;
+
+void dwinSwitchPage(uint16_t page) {
+  uint8_t data[4] = {0x5A, 0x01, (uint8_t)(page >> 8), (uint8_t)(page & 0xFF)};
+  dwinWriteVP(VP_PAGE_SWITCH, data, sizeof(data));
+}
+
 // ================================================================
 // VP-Adressplan Seite 1-7 (siehe VP-Adressplan-Dokument, 2026-08-30)
 // ================================================================
@@ -194,20 +164,20 @@ constexpr uint16_t VP_YATSI           = 0x1050; // 16 B ASCII (Nacht)
 constexpr uint16_t VP_COUNTDOWN_VAKIT = 0x1060; // 16 B ASCII
 constexpr uint16_t VP_TIME            = 0x1070; // 16 B ASCII (wiederverwendet auf Seite 2/5/7)
 constexpr uint16_t VP_DAY_S           = 0x1080; //  8 B ASCII
-constexpr uint16_t VP_MONTH_YEAR      = 0x1090; // 24 B Unicode
-constexpr uint16_t VP_WEEK_DAY        = 0x10B0; // 24 B Unicode
-constexpr uint16_t VP_PLACE           = 0x10D0; // 64 B Unicode
-constexpr uint16_t VP_HICRI           = 0x1110; // 64 B Unicode
+constexpr uint16_t VP_MONTH_YEAR      = 0x1090; // 24 B ASCII
+constexpr uint16_t VP_WEEK_DAY        = 0x10B0; // 24 B ASCII
+constexpr uint16_t VP_PLACE           = 0x10D0; // 64 B ASCII
+constexpr uint16_t VP_HICRI           = 0x1110; // 64 B ASCII
 
 // ---- Seite 2: Meldungen (0x1200-0x13FF) ----
-constexpr uint16_t VP_LABEL_MESSAGE = 0x1200; // 20 B Unicode
-constexpr uint16_t VP_MESSAGE_TEXT  = 0x1220; // 256 B Unicode
+constexpr uint16_t VP_LABEL_MESSAGE = 0x1200; // 20 B ASCII
+constexpr uint16_t VP_MESSAGE_TEXT  = 0x1220; // 256 B ASCII
 
 // ---- Seite 3: Audio-Player (0x1400-0x15FF) ----
 constexpr uint16_t VP_AUDIO_TITLE_ONE   = 0x1400; // 30 B ASCII
 constexpr uint16_t VP_AUDIO_TITLE_TWO   = 0x1420; // 30 B ASCII
-constexpr uint16_t VP_AUDIO_SPEAKER     = 0x1440; // 64 B Unicode
-constexpr uint16_t VP_AUDIO_DESCRIPTION = 0x1480; // 128 B Unicode
+constexpr uint16_t VP_AUDIO_SPEAKER     = 0x1440; // 64 B ASCII
+constexpr uint16_t VP_AUDIO_DESCRIPTION = 0x1480; // 128 B ASCII
 constexpr uint16_t VP_DURATION_MINUS    = 0x1500; //  8 B ASCII
 constexpr uint16_t VP_AUDIO_PROGRESS    = 0x1510; // 1 Wort, Icon/Balken - KEIN Text, wird nicht beschrieben
 constexpr uint16_t VP_DURATION_PLUS     = 0x1520; //  8 B ASCII
@@ -232,28 +202,28 @@ constexpr uint16_t VP_LABEL_UPTIME      = 0x17C0; // 12 B ASCII "Laufzeit"
 constexpr uint16_t VP_LABEL_DEVICE_ID   = 0x17E0; // 16 B ASCII "Geraete-ID"
 
 // ---- Seite 5: Fehler-/OTA-Update-Status (0x1800-0x19FF) ----
-constexpr uint16_t VP_LABEL_OTA_STATUS     = 0x1800; //  20 B Unicode "STATUS"
-constexpr uint16_t VP_OTA_STATUS_TEXT      = 0x1820; // 128 B Unicode
+constexpr uint16_t VP_LABEL_OTA_STATUS     = 0x1800; //  20 B ASCII "STATUS"
+constexpr uint16_t VP_OTA_STATUS_TEXT      = 0x1820; // 128 B ASCII
 constexpr uint16_t VP_OTA_PROGRESS_PERCENT = 0x18A0; //  16 B ASCII
 constexpr uint16_t VP_OTA_PROGRESS_BAR     = 0x18B0; // 1 Wort, Icon/Balken - KEIN Text, wird nicht beschrieben
 constexpr uint16_t VP_OTA_STATUS_ICON      = 0x18C0; // 1 Wort, Icon - KEIN Text, wird nicht beschrieben
 
 // ---- Seite 6: WLAN-Ersteinrichtung (0x1A00-0x1BFF) ----
-constexpr uint16_t VP_LABEL_WLAN_TITLE          = 0x1A00; //  20 B Unicode "WLAN-EINRICHTUNG"
-constexpr uint16_t VP_LABEL_WLAN_AP_NAME        = 0x1A20; //  20 B Unicode "WLAN-NAME"
+constexpr uint16_t VP_LABEL_WLAN_TITLE          = 0x1A00; //  20 B ASCII "WLAN-EINRICHTUNG"
+constexpr uint16_t VP_LABEL_WLAN_AP_NAME        = 0x1A20; //  20 B ASCII "WLAN-NAME"
 constexpr uint16_t VP_AP_SSID                   = 0x1A40; //  40 B ASCII
-constexpr uint16_t VP_WLAN_INSTRUCTIONS_TEXT    = 0x1A70; // 256 B Unicode
+constexpr uint16_t VP_WLAN_INSTRUCTIONS_TEXT    = 0x1A70; // 256 B ASCII
 constexpr uint16_t VP_PROVISIONING_STATUS_ICON  = 0x1B70; // 1 Wort, Icon - KEIN Text, wird nicht beschrieben
-constexpr uint16_t VP_PROVISIONING_STATUS_TEXT  = 0x1B80; //  32 B Unicode
+constexpr uint16_t VP_PROVISIONING_STATUS_TEXT  = 0x1B80; //  32 B ASCII
 
 // ---- Seite 7: Ramadan/Sonderzeiten (0x1C00-0x1DFF) ----
-constexpr uint16_t VP_LABEL_RAMADAN_TITLE   = 0x1C00; // 20 B Unicode "RAMADAN"
+constexpr uint16_t VP_LABEL_RAMADAN_TITLE   = 0x1C00; // 20 B ASCII "RAMADAN"
 constexpr uint16_t VP_RAMADAN_DAY_TEXT      = 0x1C20; // 16 B ASCII
-constexpr uint16_t VP_LABEL_COUNTDOWN_IFTAR = 0x1C50; // 20 B Unicode "BIS IFTAR"
+constexpr uint16_t VP_LABEL_COUNTDOWN_IFTAR = 0x1C50; // 20 B ASCII "BIS IFTAR"
 constexpr uint16_t VP_COUNTDOWN_IFTAR       = 0x1C70; // 14 B ASCII
-constexpr uint16_t VP_LABEL_SAHUR           = 0x1C80; // 20 B Unicode "SAHUR"
-constexpr uint16_t VP_LABEL_IFTAR           = 0x1CA0; // 20 B Unicode "IFTAR"
-constexpr uint16_t VP_RAMADAN_GREETING_TEXT = 0x1CC0; // 64 B Unicode
+constexpr uint16_t VP_LABEL_SAHUR           = 0x1C80; // 20 B ASCII "SAHUR"
+constexpr uint16_t VP_LABEL_IFTAR           = 0x1CA0; // 20 B ASCII "IFTAR"
+constexpr uint16_t VP_RAMADAN_GREETING_TEXT = 0x1CC0; // 64 B ASCII
 
 // ================================================================
 // Statische Labels: einmal in setup() geschrieben, aendern sich nicht.
@@ -261,41 +231,32 @@ constexpr uint16_t VP_RAMADAN_GREETING_TEXT = 0x1CC0; // 64 B Unicode
 struct StaticLabel {
   uint16_t vp;
   uint16_t len;
-  bool unicode;
   const char* text;
 };
 
 const StaticLabel STATIC_LABELS[] = {
-  { VP_LABEL_MESSAGE,        20, true,  "MELDUNG" },
-  { VP_LABEL_TITLE,          16, false, "SYSTEMINFO" },
-  { VP_LABEL_WLAN,           12, false, "WLAN" },
-  { VP_LABEL_RSSI,            8, false, "RSSI" },
-  { VP_LABEL_IP,              8, false, "IP" },
-  { VP_LABEL_MQTT,            8, false, "MQTT" },
-  { VP_LABEL_BROKER,         16, false, "Broker" },
-  { VP_LABEL_FIRMWARE,       16, false, "Firmware" },
-  { VP_LABEL_UPTIME,         12, false, "Laufzeit" },
-  { VP_LABEL_DEVICE_ID,      16, false, "Geraete-ID" },
-  { VP_LABEL_OTA_STATUS,     20, true,  "STATUS" },
-  // Laenge auf 32 B angehoben: "WLAN-EINRICHTUNG" hat 16 Zeichen, die im
-  // Plan angegebenen 20 B (=10 Zeichen Unicode) waeren zu kurz gewesen;
-  // die Adressluecke zu LabelWlanApName (0x1A20) ist 64 B breit, also passt
-  // das ohne Kollision.
-  { VP_LABEL_WLAN_TITLE,     32, true,  "WLAN-EINRICHTUNG" },
-  { VP_LABEL_WLAN_AP_NAME,   20, true,  "WLAN-NAME" },
-  { VP_LABEL_RAMADAN_TITLE,  20, true,  "RAMADAN" },
-  { VP_LABEL_COUNTDOWN_IFTAR,20, true,  "BIS IFTAR" },
-  { VP_LABEL_SAHUR,          20, true,  "SAHUR" },
-  { VP_LABEL_IFTAR,          20, true,  "IFTAR" },
+  { VP_LABEL_MESSAGE,         20, "MELDUNG" },
+  { VP_LABEL_TITLE,           16, "SYSTEMINFO" },
+  { VP_LABEL_WLAN,            12, "WLAN" },
+  { VP_LABEL_RSSI,             8, "RSSI" },
+  { VP_LABEL_IP,               8, "IP" },
+  { VP_LABEL_MQTT,             8, "MQTT" },
+  { VP_LABEL_BROKER,          16, "Broker" },
+  { VP_LABEL_FIRMWARE,        16, "Firmware" },
+  { VP_LABEL_UPTIME,          12, "Laufzeit" },
+  { VP_LABEL_DEVICE_ID,       16, "Geraete-ID" },
+  { VP_LABEL_OTA_STATUS,      20, "STATUS" },
+  { VP_LABEL_WLAN_TITLE,      20, "WLAN-EINRICHTUNG" },
+  { VP_LABEL_WLAN_AP_NAME,    20, "WLAN-NAME" },
+  { VP_LABEL_RAMADAN_TITLE,   20, "RAMADAN" },
+  { VP_LABEL_COUNTDOWN_IFTAR, 20, "BIS IFTAR" },
+  { VP_LABEL_SAHUR,           20, "SAHUR" },
+  { VP_LABEL_IFTAR,           20, "IFTAR" },
 };
 
 void sendStaticLabels() {
   for (const StaticLabel& l : STATIC_LABELS) {
-    if (l.unicode) {
-      dwinSendTextUnicode(l.vp, l.text, l.len / 2);
-    } else {
-      dwinSendText(l.vp, l.text, l.len);
-    }
+    dwinSendText(l.vp, l.text, l.len);
   }
 }
 
@@ -310,76 +271,78 @@ constexpr uint8_t ROTATE_COUNT = 3;
 struct RotatingField {
   uint16_t vp;
   uint16_t len;
-  bool unicode;
   const char* values[ROTATE_COUNT];
 };
 
 const RotatingField ROTATING_FIELDS[] = {
   // Seite 1
-  { VP_IMSAK,           16, false, { "05:12", "05:13", "05:14" } },
-  { VP_GUNES,           16, false, { "06:45", "06:46", "06:47" } },
-  { VP_OGLE,            16, false, { "13:05", "13:06", "13:07" } },
-  { VP_IKINDI,          16, false, { "16:40", "16:41", "16:42" } },
-  { VP_AKSAM,           16, false, { "19:55", "19:56", "19:57" } },
-  { VP_YATSI,           16, false, { "21:20", "21:21", "21:22" } },
-  { VP_COUNTDOWN_VAKIT, 16, false, { "00:12:34", "00:12:33", "00:12:32" } },
-  { VP_TIME,            16, false, { "12:00:00", "12:00:01", "12:00:02" } },
-  { VP_DAY_S,            8, false, { "05", "06", "07" } },
-  { VP_MONTH_YEAR,      24, true,  { "Eylul 2026", "Ekim 2026", "Kasim 2026" } },
-  { VP_WEEK_DAY,        24, true,  { "Cumartesi", "Pazar", "Pazartesi" } },
-  { VP_PLACE,           64, true,  { "Istanbul, Turkiye", "Ankara, Turkiye", "Izmir, Turkiye" } },
-  { VP_HICRI,           64, true,  { "12 Rebiulevvel 1448", "13 Rebiulevvel 1448", "14 Rebiulevvel 1448" } },
+  { VP_IMSAK,           16, { "05:12", "05:13", "05:14" } },
+  { VP_GUNES,           16, { "06:45", "06:46", "06:47" } },
+  { VP_OGLE,            16, { "13:05", "13:06", "13:07" } },
+  { VP_IKINDI,          16, { "16:40", "16:41", "16:42" } },
+  { VP_AKSAM,           16, { "19:55", "19:56", "19:57" } },
+  { VP_YATSI,           16, { "21:20", "21:21", "21:22" } },
+  { VP_COUNTDOWN_VAKIT, 16, { "00:12:34", "00:12:33", "00:12:32" } },
+  { VP_TIME,            16, { "12:00:00", "12:00:01", "12:00:02" } },
+  { VP_DAY_S,            8, { "05", "06", "07" } },
+  { VP_MONTH_YEAR,      24, { "Eylul 2026", "Ekim 2026", "Kasim 2026" } },
+  { VP_WEEK_DAY,        24, { "Cumartesi", "Pazar", "Pazartesi" } },
+  { VP_PLACE,           64, { "Istanbul, Turkiye", "Ankara, Turkiye", "Izmir, Turkiye" } },
+  { VP_HICRI,           64, { "12 Rebiulevvel 1448", "13 Rebiulevvel 1448", "14 Rebiulevvel 1448" } },
 
   // Seite 2
-  { VP_MESSAGE_TEXT, 256, true, { "Test Meldung Eins", "Test Meldung Zwei", "Test Meldung Drei - Sonderzeichen: sgioc" } },
+  { VP_MESSAGE_TEXT, 256, { "Test Meldung Eins", "Test Meldung Zwei", "Test Meldung Drei - Sonderzeichen: sgioc" } },
 
   // Seite 3
-  { VP_AUDIO_TITLE_ONE,   30, false, { "Test Titel Eins", "Test Titel Zwei", "Test Titel Drei" } },
-  { VP_AUDIO_TITLE_TWO,   30, false, { "Kategorie A", "Kategorie B", "Kategorie C" } },
-  { VP_AUDIO_SPEAKER,     64, true,  { "Sprecher: Testname Eins", "Sprecher: Testname Zwei", "Sprecher: Testname Drei" } },
-  { VP_AUDIO_DESCRIPTION,128, true,  { "Test-Beschreibung Nummer eins fuer den Audio-Player.", "Test-Beschreibung Nummer zwei fuer den Audio-Player.", "Test-Beschreibung Nummer drei fuer den Audio-Player." } },
-  { VP_DURATION_MINUS,     8, false, { "00:15", "00:30", "00:45" } },
-  { VP_DURATION_PLUS,      8, false, { "03:45", "03:30", "03:15" } },
+  { VP_AUDIO_TITLE_ONE,   30, { "Test Titel Eins", "Test Titel Zwei", "Test Titel Drei" } },
+  { VP_AUDIO_TITLE_TWO,   30, { "Kategorie A", "Kategorie B", "Kategorie C" } },
+  { VP_AUDIO_SPEAKER,     64, { "Sprecher: Testname Eins", "Sprecher: Testname Zwei", "Sprecher: Testname Drei" } },
+  { VP_AUDIO_DESCRIPTION,128, { "Test-Beschreibung Nummer eins fuer den Audio-Player.", "Test-Beschreibung Nummer zwei fuer den Audio-Player.", "Test-Beschreibung Nummer drei fuer den Audio-Player." } },
+  { VP_DURATION_MINUS,     8, { "00:15", "00:30", "00:45" } },
+  { VP_DURATION_PLUS,      8, { "03:45", "03:30", "03:15" } },
 
   // Seite 4
-  { VP_WIFI_SSID,        32, false, { "Testnetz_1", "Testnetz_2", "Testnetz_3" } },
-  { VP_WIFI_RSSI_DBM,    16, false, { "-55 dBm", "-67 dBm", "-72 dBm" } },
-  { VP_IP_ADDRESS,       16, false, { "192.168.1.42", "10.0.0.5", "172.16.0.9" } },
-  { VP_MQTT_STATUS,      16, false, { "connected", "not connected", "connected" } },
-  { VP_MQTT_BROKER_HOST, 48, false, { "broker.example.com", "192.168.1.10", "mqtt.local" } },
-  { VP_FIRMWARE_VERSION, 32, false, { "v1.0.0-test1", "v1.0.0-test2", "v1.0.0-test3" } },
-  { VP_UPTIME,           16, false, { "0d 00:01:00", "0d 00:02:00", "0d 00:03:00" } },
-  { VP_DEVICE_ID,        40, false, { "ESP32-TEST-0001", "ESP32-TEST-0002", "ESP32-TEST-0003" } },
+  { VP_WIFI_SSID,        32, { "Testnetz_1", "Testnetz_2", "Testnetz_3" } },
+  { VP_WIFI_RSSI_DBM,    16, { "-55 dBm", "-67 dBm", "-72 dBm" } },
+  { VP_IP_ADDRESS,       16, { "192.168.1.42", "10.0.0.5", "172.16.0.9" } },
+  { VP_MQTT_STATUS,      16, { "connected", "not connected", "connected" } },
+  { VP_MQTT_BROKER_HOST, 48, { "broker.example.com", "192.168.1.10", "mqtt.local" } },
+  { VP_FIRMWARE_VERSION, 32, { "v1.0.0-test1", "v1.0.0-test2", "v1.0.0-test3" } },
+  { VP_UPTIME,           16, { "0d 00:01:00", "0d 00:02:00", "0d 00:03:00" } },
+  { VP_DEVICE_ID,        40, { "ESP32-TEST-0001", "ESP32-TEST-0002", "ESP32-TEST-0003" } },
 
   // Seite 5
-  { VP_OTA_STATUS_TEXT,     128, true,  { "Update wird geladen...", "Installation laeuft...", "Update abgeschlossen" } },
-  { VP_OTA_PROGRESS_PERCENT, 16, false, { "10 %", "55 %", "100 %" } },
+  { VP_OTA_STATUS_TEXT,     128, { "Update wird geladen...", "Installation laeuft...", "Update abgeschlossen" } },
+  { VP_OTA_PROGRESS_PERCENT, 16, { "10 %", "55 %", "100 %" } },
 
   // Seite 6
-  { VP_AP_SSID,                 40, false, { "MAARIF-SETUP-01", "MAARIF-SETUP-02", "MAARIF-SETUP-03" } },
-  { VP_WLAN_INSTRUCTIONS_TEXT, 256, true,  { "Bitte mit dem WLAN MAARIF-SETUP verbinden.", "Danach im Browser 192.168.4.1 oeffnen.", "Heimnetz auswaehlen und Passwort eingeben." } },
-  { VP_PROVISIONING_STATUS_TEXT, 32, true, { "Warte auf WLAN", "Verbindet...", "Verbunden" } },
+  { VP_AP_SSID,                 40, { "MAARIF-SETUP-01", "MAARIF-SETUP-02", "MAARIF-SETUP-03" } },
+  { VP_WLAN_INSTRUCTIONS_TEXT, 256, { "Bitte mit dem WLAN MAARIF-SETUP verbinden.", "Danach im Browser 192.168.4.1 oeffnen.", "Heimnetz auswaehlen und Passwort eingeben." } },
+  { VP_PROVISIONING_STATUS_TEXT, 32, { "Warte auf Verbindung", "Verbindet...", "Verbunden" } },
 
   // Seite 7
-  { VP_RAMADAN_DAY_TEXT,      16, false, { "TAG 1 / 30", "TAG 15 / 30", "TAG 30 / 30" } },
-  { VP_COUNTDOWN_IFTAR,       14, false, { "05:12:33", "03:00:00", "00:00:01" } },
-  { VP_RAMADAN_GREETING_TEXT, 64, true,  { "Ramazan Mubarek Olsun", "Hayirli Ramazanlar", "Iyi Ramazanlar" } },
+  { VP_RAMADAN_DAY_TEXT,      16, { "TAG 1 / 30", "TAG 15 / 30", "TAG 30 / 30" } },
+  { VP_COUNTDOWN_IFTAR,       14, { "05:12:33", "03:00:00", "00:00:01" } },
+  { VP_RAMADAN_GREETING_TEXT, 64, { "Ramazan Mubarek Olsun", "Hayirli Ramazanlar", "Iyi Ramazanlar" } },
 };
 
 void sendRotatingFields(uint8_t rotationIndex) {
   for (const RotatingField& f : ROTATING_FIELDS) {
-    const char* value = f.values[rotationIndex % ROTATE_COUNT];
-    if (f.unicode) {
-      dwinSendTextUnicode(f.vp, value, f.len / 2);
-    } else {
-      dwinSendText(f.vp, value, f.len);
-    }
+    dwinSendText(f.vp, f.values[rotationIndex % ROTATE_COUNT], f.len);
   }
 }
 
 constexpr unsigned long ROTATE_INTERVAL_MS = 3000;
 unsigned long lastRotateAt = 0;
 uint8_t rotateIndex = 0;
+
+// Seite 0 = Boot/Hauptseite, Seite 1-7 = die Seiten aus dem VP-Adressplan.
+// Laenger als ROTATE_INTERVAL_MS, damit man jede Seite auch tatsaechlich
+// mit mind. einer Datenrotation sieht, bevor weitergeblaettert wird.
+constexpr uint8_t PAGE_COUNT = 8;
+constexpr unsigned long PAGE_INTERVAL_MS = 4000;
+unsigned long lastPageChangeAt = 0;
+uint8_t currentPage = 0;
 
 void setup() {
   Serial.begin(115200);
@@ -390,7 +353,10 @@ void setup() {
   sendRotatingFields(rotateIndex);
   lastRotateAt = millis();
 
-  Serial.println("Dummy-Daten Rotation 0 gesendet (Seite 1-7, ohne Icons).");
+  dwinSwitchPage(currentPage);
+  lastPageChangeAt = millis();
+
+  Serial.println("Dummy-Daten Rotation 0 gesendet (Seite 1-7, ohne Icons), Seite 0 aktiv.");
 }
 
 void loop() {
@@ -402,5 +368,14 @@ void loop() {
     Serial.print("Dummy-Daten Rotation ");
     Serial.print(rotateIndex);
     Serial.println(" gesendet.");
+  }
+
+  if (millis() - lastPageChangeAt >= PAGE_INTERVAL_MS) {
+    currentPage = (currentPage + 1) % PAGE_COUNT;
+    dwinSwitchPage(currentPage);
+    lastPageChangeAt = millis();
+
+    Serial.print("Seite gewechselt zu ");
+    Serial.println(currentPage);
   }
 }
